@@ -1,0 +1,48 @@
+AtlSuspendActiveUsers
+=====================
+
+Purpose
+-------
+Suspend all ACTIVE managed Atlassian Cloud accounts whose "Last active date" is before a cutoff date. The script supports dry-run, domain exclusions, and writing results to CSV.
+
+Prerequisites
+-------------
+- Python 3.8+ (3.11 recommended)
+- requests library (pip install requests)
+- ATLASSIAN_TOKEN environment variable containing a valid Atlassian bearer token
+- Org ID provided via --org or ATLASSIAN_ORG environment variable
+
+Quick examples
+--------------
+- Suspend accounts last active before 01.01.2023 (live):
+  python AtlSuspendActiveUsers.py -d 01.01.2023
+
+- Dry-run (preview only):
+  python AtlSuspendActiveUsers.py -d 01.01.2023 --dry-run
+
+- Specify org and output CSV:
+  python AtlSuspendActiveUsers.py --org YOUR_ORG_ID -d 01.06.2024 --out suspended.csv
+
+- Exclude domains from suspension:
+  python AtlSuspendActiveUsers.py -d 01.01.2023 --exclude-domain idera.com --exclude-domain example.com
+
+Arguments (summary)
+-------------------
+- -d, --before-date    Cutoff date in DD.MM.YYYY. Accounts last active BEFORE this date are candidates.
+- --org                Atlassian organization ID (or set ATLASSIAN_ORG env var)
+- --exclude-domain     Exclude one or more domains from suspension (can be repeated)
+- --include-never-active  Include accounts with no last_active value
+- --out                Output CSV path (default: atl_suspended_users.csv)
+- --dry-run            Do not perform suspensions; show what would be done
+
+Behavior notes
+--------------
+- The script paginates the Atlassian Admin API to load all managed users.
+- When the top-level last_active is missing, the script falls back to the most recent product-level last_active.
+- Account status comparisons are case-insensitive.
+- HTTP requests use simple retry/backoff for 429 and 5xx responses.
+- The script prints ANSI-colored messages; on Windows you may want to enable VT100 support or use colorama.
+
+License
+-------
+No license specified. Use and modify as needed.
