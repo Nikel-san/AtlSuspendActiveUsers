@@ -20,7 +20,7 @@ Usage examples:
   python AtlUserSuspend.py --org YOUR_ORG_ID -d 01.06.2024 --out suspended.csv
 
   # exclude specific domains from suspension
-  python AtlUserSuspend.py -d 01.01.2023 --exclude-domain idera.com --exclude-domain embarcadero.com
+  python AtlUserSuspend.py -d 01.01.2023 --exclude-domain example.com --exclude-domain corp.example.com
 """
 import argparse
 import csv
@@ -229,7 +229,7 @@ def main():
             "  python AtlUserSuspend.py -d 01.01.2023\n"
             "  python AtlUserSuspend.py -d 01.01.2023 --dry-run\n"
             "  python AtlUserSuspend.py -d 01.06.2024 --out suspended.csv\n"
-            "  python AtlUserSuspend.py -d 01.01.2023 --exclude-domain idera.com\n"
+            "  python AtlUserSuspend.py -d 01.01.2023 --exclude-domain example.com\n"
             "  python AtlUserSuspend.py -d 01.01.2023 --include-never-active\n"
         )
     )

@@ -24,7 +24,7 @@ Quick examples
   python AtlSuspendActiveUsers.py --org YOUR_ORG_ID -d 01.06.2024 --out suspended.csv
 
 - Exclude domains from suspension:
-  python AtlSuspendActiveUsers.py -d 01.01.2023 --exclude-domain idera.com --exclude-domain example.com
+  python AtlSuspendActiveUsers.py -d 01.01.2023 --exclude-domain example.com --exclude-domain example.com
 
 Arguments (summary)
 -------------------
