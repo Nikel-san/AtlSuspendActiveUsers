@@ -40,8 +40,16 @@ Behavior notes
 - The script paginates the Atlassian Admin API to load all managed users.
 - When the top-level last_active is missing, the script falls back to the most recent product-level last_active.
 - Account status comparisons are case-insensitive.
-- HTTP requests use simple retry/backoff for 429 and 5xx responses.
+- Before suspension, the script calls the user profile endpoint and checks the job title. If the title contains "Service Account" (case-insensitive), the user is skipped and recorded in the CSV with action="skipped" and reason="Service Account".
+- HTTP requests use a retry-enabled session for 429 and 5xx responses.
 - The script prints ANSI-colored messages; on Windows you may want to enable VT100 support or use colorama.
+
+Service account exclusion
+-------------------------
+- Users whose job title contains "Service Account" are automatically skipped.
+- Matching is case-insensitive, so "service account", "Service Account", and "SERVICE ACCOUNT" are all treated the same.
+- Example output:
+  - `Skipped: user@example.com — Service Account — skipped`
 
 License
 -------

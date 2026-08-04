@@ -26,10 +26,12 @@ import argparse
 import csv
 import os
 import sys
-import time
 from datetime import datetime, timezone
+
 import requests
+from requests.adapters import HTTPAdapter
 from requests.exceptions import RequestException
+from urllib3.util.retry import Retry
 
 BASE_URL = "https://api.atlassian.com/admin/v1"
 USER_MGMT_URL = "https://api.atlassian.com/users"
@@ -52,6 +54,22 @@ def error(msg: str):
     print(f"{RED}{msg}{RESET}", file=sys.stderr)
 
 
+def create_request_session() -> requests.Session:
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        read=3,
+        connect=3,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"]),
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 def get_auth_header():
     token = os.getenv("ATLASSIAN_TOKEN")
     if not token:
@@ -60,50 +78,32 @@ def get_auth_header():
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
-def request_with_retries(method, url, headers=None, params=None, json=None, timeout=20, max_retries=4):
-    """Perform HTTP request with basic retry/backoff on 429 and 5xx errors.
+def request_with_retries(session, method, url, headers=None, params=None, json=None, timeout=20):
+    """Perform an HTTP request using a session configured with retries."""
+    if session is None:
+        session = create_request_session()
+    return session.request(method, url, headers=headers, params=params, json=json, timeout=timeout)
 
-    Returns requests.Response or raises RequestException after retries.
-    """
-    attempt = 0
-    last_exc = None
-    last_resp = None
-    while attempt < max_retries:
-        attempt += 1
-        try:
-            resp = requests.request(method, url, headers=headers, params=params, json=json, timeout=timeout)
-        except RequestException as e:
-            last_exc = e
-            backoff = 1 * (2 ** (attempt - 1))
-            warn(f"Request error (attempt {attempt}/{max_retries}): {e}. Retrying in {backoff}s")
-            time.sleep(backoff)
-            continue
 
-        if resp.status_code == 429:
-            retry_after = resp.headers.get('Retry-After')
-            try:
-                wait = int(retry_after) if retry_after else 1 * (2 ** (attempt - 1))
-            except Exception:
-                wait = 1 * (2 ** (attempt - 1))
-            warn(f"Rate limited (429). Waiting {wait}s before retry (attempt {attempt}/{max_retries})")
-            time.sleep(wait)
-            last_resp = resp
-            continue
-        if 500 <= resp.status_code < 600:
-            backoff = 1 * (2 ** (attempt - 1))
-            warn(f"Server error {resp.status_code} (attempt {attempt}/{max_retries}). Retrying in {backoff}s")
-            time.sleep(backoff)
-            last_resp = resp
-            continue
+def is_service_account_job_title(job_title: str) -> bool:
+    if not job_title:
+        return False
+    return "service account" in (job_title or "").lower()
 
-        return resp
 
-    # exhausted retries
-    if last_exc:
-        raise last_exc
-    if last_resp is not None:
-        return last_resp
-    raise RequestException("Max retries exhausted with no response")
+def get_user_profile(account_id, headers, session=None):
+    """Retrieve a user's profile to inspect the job title before suspension."""
+    if not account_id:
+        return ""
+    url = f"{USER_MGMT_URL}/{account_id}/manage/profile"
+    try:
+        resp = request_with_retries(session, "GET", url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except (RequestException, ValueError) as exc:
+        warn(f"Could not read profile for {account_id}: {exc}")
+        return ""
+    return data.get("job_title") or data.get("jobTitle") or ""
 
 
 def parse_last_active(last_active_str):
@@ -121,7 +121,7 @@ def parse_last_active(last_active_str):
         return None
 
 
-def load_all_org_users(org_id, headers):
+def load_all_org_users(org_id, headers, session=None):
     """Paginate all managed users in the org.
 
     Returns list of dicts with email, account_id, name, account_status, last_active, product_access.
@@ -131,7 +131,7 @@ def load_all_org_users(org_id, headers):
     page = 0
 
     def _get(u):
-        return request_with_retries('GET', u, headers=headers, timeout=30)
+        return request_with_retries(session, 'GET', u, headers=headers, timeout=30)
 
     while url:
         page += 1
@@ -161,7 +161,6 @@ def load_all_org_users(org_id, headers):
                     "account_status": u.get("account_status", ""),
                     "last_active": last_active_str,
                     "product_access": product_access,
-                    "has_product_access": len(product_access) > 0,
                 })
 
         next_link = data.get("links", {}).get("next")
@@ -170,7 +169,7 @@ def load_all_org_users(org_id, headers):
     print(f"  Loaded {len(all_users)} users across {page} pages.")
     return all_users
 
-def suspend_user(account_id, headers, dry_run=False):
+def suspend_user(account_id, headers, dry_run=False, session=None):
     """Suspend (disable) a user via the User Management lifecycle API."""
     if not account_id:
         warn("Cannot suspend user without account_id")
@@ -182,7 +181,7 @@ def suspend_user(account_id, headers, dry_run=False):
         return True
 
     try:
-        resp = request_with_retries('POST', url, headers=headers, timeout=20, max_retries=4)
+        resp = request_with_retries(session, 'POST', url, headers=headers, timeout=20)
     except RequestException as e:
         error(f"  Suspend request failed for {account_id}: {e}")
         return False
@@ -198,13 +197,20 @@ def domain_of(email: str):
     return email.split('@', 1)[1].lower() if email and '@' in email else None
 
 
-def write_results_csv(path, suspended_users):
-    """Write suspended accounts to CSV with headers."""
+def write_results_csv(path, results):
+    """Write suspension outcomes to CSV, including skipped service-account users."""
     with open(path, 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
-        w.writerow(["email", "name", "account_id", "last_active", "status"])
-        for u in suspended_users:
-            w.writerow([u["email"], u["name"], u["account_id"], u["last_active"] or "never", u["status"]])
+        w.writerow(["email", "name", "account_id", "last_active", "action", "reason"])
+        for u in results:
+            w.writerow([
+                u["email"],
+                u["name"],
+                u["account_id"],
+                u["last_active"] or "never",
+                u["action"],
+                u["reason"],
+            ])
 
 
 def get_available_filename(path):
@@ -263,10 +269,11 @@ def main():
         warn("--org not provided, using ATLASSIAN_ORG from environment")
 
     headers = get_auth_header()
+    session = create_request_session()
 
     # Load ALL org users
     print(f"Loading all managed users from org {org_id}...")
-    all_users = load_all_org_users(org_id, headers)
+    all_users = load_all_org_users(org_id, headers, session=session)
 
     if not all_users:
         print("No users found in org.")
@@ -279,6 +286,8 @@ def main():
     skipped_domain = 0
     skipped_recent = 0
     skipped_never_active = 0
+    skipped_service_account = 0
+    results = []
 
     for u in all_users:
         # only suspend active accounts (normalize casing and handle missing key)
@@ -316,6 +325,7 @@ def main():
     print(f"  Skipped (excluded domain):  {skipped_domain}")
     print(f"  Skipped (active after cutoff): {skipped_recent}")
     print(f"  Skipped (never active, not included): {skipped_never_active}")
+    print(f"  Skipped (Service Account): {skipped_service_account}")
 
     if not candidates:
         print("\nNo accounts to suspend.")
@@ -327,7 +337,21 @@ def main():
 
     for i, u in enumerate(candidates, 1):
         print(f"  [{i}/{len(candidates)}] Suspending {u['email']} (last active: {u['last_active'] or 'never'})...")
-        ok = suspend_user(u["account_id"], headers, dry_run=args.dry_run)
+        job_title = get_user_profile(u["account_id"], headers, session=session)
+        if is_service_account_job_title(job_title):
+            skipped_service_account += 1
+            print(f"{YELLOW}    Skipped: {u['email']} — Service Account — skipped{RESET}")
+            results.append({
+                "email": u["email"],
+                "name": u["name"],
+                "account_id": u["account_id"],
+                "last_active": u["last_active"],
+                "action": "skipped",
+                "reason": "Service Account",
+            })
+            continue
+
+        ok = suspend_user(u["account_id"], headers, dry_run=args.dry_run, session=session)
         if ok:
             if not args.dry_run:
                 success(f"    Suspended: {u['email']}")
@@ -338,17 +362,27 @@ def main():
                 "name": u["name"],
                 "account_id": u["account_id"],
                 "last_active": u["last_active"],
-                "status": "suspended" if not args.dry_run else "would_suspend",
+                "action": "suspended" if not args.dry_run else "would_suspend",
+                "reason": "",
             })
+            results.append(suspended[-1])
         else:
             failed += 1
+            results.append({
+                "email": u["email"],
+                "name": u["name"],
+                "account_id": u["account_id"],
+                "last_active": u["last_active"],
+                "action": "failed",
+                "reason": "Suspension failed",
+            })
 
     # Write results
-    if suspended:
+    if results:
         out_path = get_available_filename(args.out)
         if out_path != args.out:
             warn(f"Output file {args.out} exists, writing to: {out_path}")
-        write_results_csv(out_path, suspended)
+        write_results_csv(out_path, results)
         print(f"\nWrote results to: {out_path}")
 
     # Summary
@@ -357,7 +391,8 @@ def main():
     print(f"  Org users loaded:          {len(all_users)}")
     print(f"  Cutoff date:               {args.before_date}")
     print(f"  Candidates:                {len(candidates)}")
-    print(f"  {label}:          {len(suspended)}")
+    print(f"  {label:<15} {len(suspended)}")
+    print(f"  Skipped (Service Account): {skipped_service_account}")
     if failed:
         print(f"  Failed:                    {failed}")
 
