@@ -23,6 +23,7 @@ Usage examples:
   python AtlUserSuspend.py -d 01.01.2023 --exclude-domain example.com --exclude-domain corp.example.com
 """
 import argparse
+import base64
 import csv
 import os
 import sys
@@ -33,8 +34,27 @@ from requests.adapters import HTTPAdapter
 from requests.exceptions import RequestException
 from urllib3.util.retry import Retry
 
-BASE_URL = "https://api.atlassian.com/admin/v1"
-USER_MGMT_URL = "https://api.atlassian.com/users"
+DEFAULT_SITE = "https://api.atlassian.com"
+BASE_URL = f"{DEFAULT_SITE}/admin/v1"
+USER_MGMT_URL = f"{DEFAULT_SITE}/users"
+
+
+def get_site_base_url() -> str:
+    """Return the Atlassian base URL from ATLASSIAN_SITE."""
+    raw_site = (os.getenv("ATLASSIAN_SITE") or "").strip()
+    if not raw_site:
+        raise ValueError("Required environment variable ATLASSIAN_SITE is not set or is empty.")
+    if raw_site.startswith("http://") or raw_site.startswith("https://"):
+        return raw_site.rstrip("/")
+    return f"https://{raw_site.rstrip('/')}"
+
+
+def configure_site_urls() -> None:
+    """Set the active Atlassian base URLs using the configured site."""
+    global BASE_URL, USER_MGMT_URL
+    site_base = get_site_base_url()
+    BASE_URL = f"{site_base}/admin/v1"
+    USER_MGMT_URL = f"{site_base}/users"
 
 YELLOW = '\033[33m'
 GREEN = '\033[32m'
@@ -70,12 +90,31 @@ def create_request_session() -> requests.Session:
     return session
 
 
+def get_required_env(name: str) -> str:
+    value = (os.getenv(name) or "").strip()
+    if not value:
+        raise ValueError(f"Required environment variable {name} is not set or is empty.")
+    return value
+
+
 def get_auth_header():
-    token = os.getenv("ATLASSIAN_TOKEN")
-    if not token:
-        print("ATLASSIAN_TOKEN env var not set", file=sys.stderr)
-        sys.exit(2)
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    jira_email = (os.getenv("JIRA_EMAIL") or "").strip()
+    jira_pat = (os.getenv("JIRA_PAT") or "").strip()
+    legacy_token = (os.getenv("ATLASSIAN_TOKEN") or "").strip()
+
+    if jira_email and jira_pat:
+        credentials = f"{jira_email}:{jira_pat}".encode("utf-8")
+        encoded = base64.b64encode(credentials).decode("ascii")
+        return {"Authorization": f"Basic {encoded}", "Content-Type": "application/json"}
+
+    if legacy_token:
+        return {"Authorization": f"Bearer {legacy_token}", "Content-Type": "application/json"}
+
+    print(
+        "Error: Required auth values missing. Set JIRA_EMAIL and JIRA_PAT, or ATLASSIAN_TOKEN before running this script.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 def request_with_retries(session, method, url, headers=None, params=None, json=None, timeout=20):
@@ -261,13 +300,20 @@ def main():
         sys.exit(2)
 
     # Org ID
-    org_id = args.org or os.getenv("ATLASSIAN_ORG")
+    org_id = (args.org or os.getenv("ATLASSIAN_ORG") or "").strip()
     if not org_id:
         print("Error: Org ID required. Provide --org or set ATLASSIAN_ORG env var.", file=sys.stderr)
         sys.exit(1)
     if not args.org and os.getenv("ATLASSIAN_ORG"):
         warn("--org not provided, using ATLASSIAN_ORG from environment")
 
+    try:
+        get_required_env("ATLASSIAN_SITE")
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    configure_site_urls()
     headers = get_auth_header()
     session = create_request_session()
 
