@@ -89,23 +89,29 @@ def get_required_env(name: str) -> str:
     return value
 
 
-def get_auth_header():
+def get_org_auth_header() -> dict:
+    """Auth for api.atlassian.com (org admin API) — always Bearer token."""
+    token = (os.getenv("ATLASSIAN_TOKEN") or "").strip()
+    if not token:
+        print("Error: ATLASSIAN_TOKEN is required for org admin API calls.", file=sys.stderr)
+        sys.exit(2)
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+def get_site_auth_header() -> dict:
+    """Auth for site-level APIs (Jira/Confluence) — Basic with PAT when present."""
     jira_email = (os.getenv("JIRA_EMAIL") or "").strip()
     jira_pat = (os.getenv("JIRA_PAT") or "").strip()
-    legacy_token = (os.getenv("ATLASSIAN_TOKEN") or "").strip()
-
     if jira_email and jira_pat:
         credentials = f"{jira_email}:{jira_pat}".encode("utf-8")
         encoded = base64.b64encode(credentials).decode("ascii")
         return {"Authorization": f"Basic {encoded}", "Content-Type": "application/json"}
 
-    if legacy_token:
-        return {"Authorization": f"Bearer {legacy_token}", "Content-Type": "application/json"}
+    token = (os.getenv("ATLASSIAN_TOKEN") or "").strip()
+    if token:
+        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    print(
-        "Error: Required auth values missing. Set JIRA_EMAIL and JIRA_PAT, or ATLASSIAN_TOKEN before running this script.",
-        file=sys.stderr,
-    )
+    print("Error: No auth credentials available for site API.", file=sys.stderr)
     sys.exit(2)
 
 
@@ -321,12 +327,13 @@ def main():
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    headers = get_auth_header()
+    org_headers = get_org_auth_header()
+    site_headers = get_site_auth_header()
     session = create_request_session()
 
     # Load ALL org users
     print(f"Loading all managed users from org {org_id}...")
-    all_users = load_all_org_users(org_id, headers, session=session)
+    all_users = load_all_org_users(org_id, org_headers, session=session)
 
     if not all_users:
         print("No users found in org.")
@@ -390,7 +397,7 @@ def main():
 
     for i, u in enumerate(candidates, 1):
         print(f"  [{i}/{len(candidates)}] Suspending {u['email']} (last active: {u['last_active'] or 'never'})...")
-        job_title = get_user_profile(u["account_id"], headers, session=session)
+        job_title = get_user_profile(u["account_id"], org_headers, session=session)
         if job_title is None:
             warn(f"  Could not verify profile for {u['email']} — skipping")
             results.append({
@@ -416,7 +423,7 @@ def main():
             })
             continue
 
-        ok = suspend_user(u["account_id"], headers, dry_run=args.dry_run, session=session)
+        ok = suspend_user(u["account_id"], org_headers, dry_run=args.dry_run, session=session)
         if ok:
             if not args.dry_run:
                 success(f"    Suspended: {u['email']}")

@@ -9,7 +9,8 @@ Prerequisites
 -------------
 - Python 3.8+ (3.11 recommended)
 - requests library (pip install requests)
-- ATLASSIAN_TOKEN environment variable containing a valid Atlassian bearer token
+- ATLASSIAN_TOKEN environment variable containing a valid Atlassian bearer token for the org admin API (`api.atlassian.com`)
+- JIRA_EMAIL and JIRA_PAT environment variables for site-level Jira/Confluence API auth when needed
 - Org ID provided via --org or ATLASSIAN_ORG environment variable
 
 Quick examples
