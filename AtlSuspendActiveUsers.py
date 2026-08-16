@@ -133,7 +133,7 @@ def is_service_account_job_title(job_title: str) -> bool:
 def get_user_profile(account_id, headers, session=None):
     """Retrieve a user's profile to inspect the job title before suspension."""
     if not account_id:
-        return ""
+        return None
     url = f"{USER_MGMT_URL}/{account_id}/manage/profile"
     try:
         resp = request_with_retries(session, "GET", url, headers=headers, timeout=30)
@@ -141,8 +141,24 @@ def get_user_profile(account_id, headers, session=None):
         data = resp.json()
     except (RequestException, ValueError) as exc:
         warn(f"Could not read profile for {account_id}: {exc}")
-        return ""
-    return data.get("job_title") or data.get("jobTitle") or ""
+        return None
+
+    account = data.get("account", data) if isinstance(data, dict) else data
+    extended_profile = account.get("extended_profile") if isinstance(account, dict) else {}
+    jt = (
+        account.get("job_title")
+        if isinstance(account, dict) else None
+    ) or (
+        account.get("jobTitle")
+        if isinstance(account, dict) else None
+    ) or (
+        extended_profile.get("job_title")
+        if isinstance(extended_profile, dict) else None
+    ) or (
+        extended_profile.get("jobTitle")
+        if isinstance(extended_profile, dict) else None
+    ) or ""
+    return jt or None
 
 
 def parse_last_active(last_active_str):
@@ -384,6 +400,18 @@ def main():
     for i, u in enumerate(candidates, 1):
         print(f"  [{i}/{len(candidates)}] Suspending {u['email']} (last active: {u['last_active'] or 'never'})...")
         job_title = get_user_profile(u["account_id"], headers, session=session)
+        if job_title is None:
+            warn(f"  Could not verify profile for {u['email']} — skipping")
+            results.append({
+                "email": u["email"],
+                "name": u["name"],
+                "account_id": u["account_id"],
+                "last_active": u["last_active"],
+                "action": "skipped",
+                "reason": "Profile unavailable",
+            })
+            continue
+
         if is_service_account_job_title(job_title):
             skipped_service_account += 1
             print(f"{YELLOW}    Skipped: {u['email']} — Service Account — skipped{RESET}")

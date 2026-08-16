@@ -41,6 +41,7 @@ Behavior notes
 - When the top-level last_active is missing, the script falls back to the most recent product-level last_active.
 - Account status comparisons are case-insensitive.
 - Before suspension, the script calls the user profile endpoint and checks the job title. If the title contains "Service Account" (case-insensitive), the user is skipped and recorded in the CSV with action="skipped" and reason="Service Account".
+- If the profile endpoint cannot be fetched, the user is skipped with action="skipped" and reason="Profile unavailable" instead of being suspended.
 - HTTP requests use a retry-enabled session for 429 and 5xx responses.
 - The script prints ANSI-colored messages; on Windows you may want to enable VT100 support or use colorama.
 
