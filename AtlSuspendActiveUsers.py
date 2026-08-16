@@ -35,8 +35,8 @@ from requests.exceptions import RequestException
 from urllib3.util.retry import Retry
 
 DEFAULT_SITE = "https://api.atlassian.com"
-BASE_URL = f"{DEFAULT_SITE}/admin/v1"
-USER_MGMT_URL = f"{DEFAULT_SITE}/users"
+ADMIN_API_BASE_URL = f"{DEFAULT_SITE}/admin/v1"
+USER_MGMT_API_BASE_URL = f"{DEFAULT_SITE}/users"
 
 
 def get_site_base_url() -> str:
@@ -47,14 +47,6 @@ def get_site_base_url() -> str:
     if raw_site.startswith("http://") or raw_site.startswith("https://"):
         return raw_site.rstrip("/")
     return f"https://{raw_site.rstrip('/')}"
-
-
-def configure_site_urls() -> None:
-    """Set the active Atlassian base URLs using the configured site."""
-    global BASE_URL, USER_MGMT_URL
-    site_base = get_site_base_url()
-    BASE_URL = f"{site_base}/admin/v1"
-    USER_MGMT_URL = f"{site_base}/users"
 
 YELLOW = '\033[33m'
 GREEN = '\033[32m'
@@ -134,7 +126,7 @@ def get_user_profile(account_id, headers, session=None):
     """Retrieve a user's profile to inspect the job title before suspension."""
     if not account_id:
         return None
-    url = f"{USER_MGMT_URL}/{account_id}/manage/profile"
+    url = f"{USER_MGMT_API_BASE_URL}/{account_id}/manage/profile"
     try:
         resp = request_with_retries(session, "GET", url, headers=headers, timeout=30)
         resp.raise_for_status()
@@ -157,8 +149,8 @@ def get_user_profile(account_id, headers, session=None):
     ) or (
         extended_profile.get("jobTitle")
         if isinstance(extended_profile, dict) else None
-    ) or ""
-    return jt or None
+    )
+    return jt if jt is not None else ""
 
 
 def parse_last_active(last_active_str):
@@ -181,7 +173,7 @@ def load_all_org_users(org_id, headers, session=None):
 
     Returns list of dicts with email, account_id, name, account_status, last_active, product_access.
     """
-    url = f"{BASE_URL}/orgs/{org_id}/users"
+    url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/users"
     all_users = []
     page = 0
 
@@ -230,7 +222,7 @@ def suspend_user(account_id, headers, dry_run=False, session=None):
         warn("Cannot suspend user without account_id")
         return False
 
-    url = f"{USER_MGMT_URL}/{account_id}/manage/lifecycle/disable"
+    url = f"{USER_MGMT_API_BASE_URL}/{account_id}/manage/lifecycle/disable"
     if dry_run:
         print(f"  DRY RUN: POST {url}")
         return True
@@ -329,7 +321,6 @@ def main():
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    configure_site_urls()
     headers = get_auth_header()
     session = create_request_session()
 
