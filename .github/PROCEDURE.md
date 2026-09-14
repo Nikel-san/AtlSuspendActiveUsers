@@ -96,7 +96,7 @@ python AtlSuspendActiveUsers.py --before-date 01.01.2023
 python AtlSuspendActiveUsers.py --file users.csv --dry-run
 ```
 
-The CSV must contain one email address per row, without a header. UTF-8 and UTF-8-BOM files are accepted; whitespace is stripped and blank rows are ignored. File mode skips organization-user pagination and looks up each email through `GET /rest/api/3/user/search?query=...`. A populated `emailAddress` must match exactly, case-insensitively; if Atlassian redacts it, the returned search result is associated with the queried email. Managed accounts are suspended through the lifecycle API, while external/unmanaged accounts, including Jira `accountType="atlassian"`, use organization-level suspend access. Missing users are recorded as `User not found`.
+The CSV must contain one email address per row, without a header. UTF-8 and UTF-8-BOM files are accepted; whitespace is stripped and blank rows are ignored. File mode skips organization-user pagination and looks up each email through `GET /rest/api/3/user/search?query=...`. A populated `emailAddress` must match exactly, case-insensitively; if Atlassian redacts it, the returned search result is associated with the queried email. Managed accounts are suspended through the lifecycle API and retain the managed profile/service-account check, while external/unmanaged accounts, including Jira `accountType="atlassian"`, skip the managed-only profile endpoint and use organization-level suspend access. Missing users are recorded as `User not found`.
 
 ## Anti-Patterns to Avoid
 
