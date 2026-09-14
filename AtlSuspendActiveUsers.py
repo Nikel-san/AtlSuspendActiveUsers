@@ -283,7 +283,7 @@ def suspend_user(org_id, user, headers, dry_run=False, session=None):
     if normalize_account_type(user.get("account_type")) != "external":
         url = f"{USER_MGMT_API_BASE_URL}/{account_id}/manage/lifecycle/disable"
     else:
-        url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/users/{account_id}/suspend"
+        url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/directory/users/{account_id}/suspend-access"
     if dry_run:
         print(f"  DRY RUN: POST {url}")
         return True
