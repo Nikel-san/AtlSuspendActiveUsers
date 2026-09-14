@@ -182,10 +182,10 @@ def search_site_user(email, headers, session=None):
         return None
     for user in users:
         email_address = (user.get("emailAddress") or "").strip()
-        if email_address.lower() != email.lower():
+        if email_address and email_address.lower() != email.lower():
             continue
         return {
-            "email": email_address,
+            "email": email_address or email,
             "account_id": user.get("accountId"),
             "name": user.get("displayName", ""),
             "account_status": "active" if user.get("active") else "inactive",
@@ -266,8 +266,10 @@ def normalize_account_type(account_type):
     normalized = (account_type or "").strip().lower().replace("_", "-")
     if normalized in {"external", "unmanaged", "unmanaged-account", "external-account"}:
         return "external"
-    if normalized in {"managed", "managed-account", "atlassian"}:
+    if normalized in {"managed", "managed-account"}:
         return "managed"
+    if normalized == "atlassian":
+        return "external"
     return "unknown"
 
 
