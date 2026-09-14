@@ -3,7 +3,7 @@ AtlSuspendActiveUsers
 
 Purpose
 -------
-Suspend all ACTIVE managed Atlassian Cloud accounts whose "Last active date" is before a cutoff date. The script supports dry-run, domain exclusions, and writing results to CSV.
+Suspend active Atlassian Cloud accounts selected by a last-active cutoff date or by a single-column email CSV. Managed accounts use the lifecycle API; external accounts use the organization-level access suspension action. The script supports dry-run, domain exclusions, and writing results to CSV.
 
 Prerequisites
 -------------
@@ -21,6 +21,12 @@ Quick examples
 - Dry-run (preview only):
   python AtlSuspendActiveUsers.py -d 01.01.2023 --dry-run
 
+- Suspend users from a UTF-8 CSV with one email per row and no header:
+  python AtlSuspendActiveUsers.py --file users.csv
+
+- Preview CSV suspensions:
+  python AtlSuspendActiveUsers.py -f users.csv --dry-run
+
 - Specify org and output CSV:
   python AtlSuspendActiveUsers.py --org YOUR_ORG_ID -d 01.06.2024 --out suspended.csv
 
@@ -30,6 +36,7 @@ Quick examples
 Arguments (summary)
 -------------------
 - -d, --before-date    Cutoff date in DD.MM.YYYY. Accounts last active BEFORE this date are candidates.
+- -f, --file           CSV containing one email address per row, without a header. Mutually exclusive with --before-date.
 - --org                Atlassian organization ID (or set ATLASSIAN_ORG env var)
 - --exclude-domain     Exclude one or more domains from suspension (can be repeated)
 - --include-never-active  Include accounts with no last_active value
@@ -39,6 +46,10 @@ Arguments (summary)
 Behavior notes
 --------------
 - The script paginates the Atlassian Admin API to load all managed users.
+- CSV input accepts UTF-8 and UTF-8-BOM files, strips whitespace, and ignores blank rows.
+- Users not found in the organization are recorded as skipped with reason `User not found`.
+- Managed accounts use User Management lifecycle disable. External/unmanaged accounts use organization-level suspend access, avoiding the lifecycle API 403 response.
+- Output CSV columns are `email`, `name`, `account_id`, `account_type`, `last_active`, `action`, and `reason`.
 - When the top-level last_active is missing, the script falls back to the most recent product-level last_active.
 - Account status comparisons are case-insensitive.
 - Before suspension, the script calls the user profile endpoint and checks the job title. If the title contains "Service Account" (case-insensitive), the user is skipped and recorded in the CSV with action="skipped" and reason="Service Account".

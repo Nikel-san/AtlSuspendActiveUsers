@@ -175,7 +175,7 @@ def parse_last_active(last_active_str):
 
 
 def load_all_org_users(org_id, headers, session=None):
-    """Paginate all managed users in the org.
+    """Paginate all users with access to the organization.
 
     Returns list of dicts with email, account_id, name, account_status, last_active, product_access.
     """
@@ -212,6 +212,9 @@ def load_all_org_users(org_id, headers, session=None):
                     "account_id": u.get("account_id") or u.get("accountId"),
                     "name": u.get("name", ""),
                     "account_status": u.get("account_status", ""),
+                    "account_type": u.get("account_type") or u.get("accountType") or (
+                        "managed" if u.get("is_managed") or u.get("managed") else ""
+                    ),
                     "last_active": last_active_str,
                     "product_access": product_access,
                 })
@@ -222,13 +225,24 @@ def load_all_org_users(org_id, headers, session=None):
     print(f"  Loaded {len(all_users)} users across {page} pages.")
     return all_users
 
-def suspend_user(account_id, headers, dry_run=False, session=None):
-    """Suspend (disable) a user via the User Management lifecycle API."""
+def normalize_account_type(account_type):
+    normalized = (account_type or "").strip().lower().replace("_", "-")
+    if normalized in {"external", "unmanaged", "unmanaged-account", "external-account"}:
+        return "external"
+    return "managed"
+
+
+def suspend_user(org_id, user, headers, dry_run=False, session=None):
+    """Suspend a managed account or suspend external organization access."""
+    account_id = user.get("account_id")
     if not account_id:
         warn("Cannot suspend user without account_id")
         return False
 
-    url = f"{USER_MGMT_API_BASE_URL}/{account_id}/manage/lifecycle/disable"
+    if normalize_account_type(user.get("account_type")) == "managed":
+        url = f"{USER_MGMT_API_BASE_URL}/{account_id}/manage/lifecycle/disable"
+    else:
+        url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/users/{account_id}/suspend"
     if dry_run:
         print(f"  DRY RUN: POST {url}")
         return True
@@ -251,15 +265,16 @@ def domain_of(email: str):
 
 
 def write_results_csv(path, results):
-    """Write suspension outcomes to CSV, including skipped service-account users."""
+    """Write suspension outcomes to CSV, including skipped users."""
     with open(path, 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
-        w.writerow(["email", "name", "account_id", "last_active", "action", "reason"])
+        w.writerow(["email", "name", "account_id", "account_type", "last_active", "action", "reason"])
         for u in results:
             w.writerow([
                 u["email"],
                 u["name"],
                 u["account_id"],
+                u["account_type"],
                 u["last_active"] or "never",
                 u["action"],
                 u["reason"],
@@ -278,10 +293,27 @@ def get_available_filename(path):
         i += 1
 
 
+def load_email_file(path):
+    """Load non-empty email values from a UTF-8 or UTF-8-BOM CSV file."""
+    with open(path, "r", encoding="utf-8-sig", newline="") as source:
+        return [row[0].strip() for row in csv.reader(source) if row and row[0].strip()]
+
+
+def result_for(user, action, reason=""):
+    return {
+        "email": user.get("email", ""),
+        "name": user.get("name", ""),
+        "account_id": user.get("account_id", ""),
+        "account_type": normalize_account_type(user.get("account_type")),
+        "last_active": user.get("last_active"),
+        "action": action,
+        "reason": reason,
+    }
+
+
 def main():
     p = argparse.ArgumentParser(
-        description="AtlUserSuspend: suspend all active managed accounts whose last active date "
-                    "is before a specified cutoff date",
+        description="AtlUserSuspend: suspend active Atlassian accounts by date or CSV input",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -290,12 +322,16 @@ def main():
             "  python AtlUserSuspend.py -d 01.06.2024 --out suspended.csv\n"
             "  python AtlUserSuspend.py -d 01.01.2023 --exclude-domain example.com\n"
             "  python AtlUserSuspend.py -d 01.01.2023 --include-never-active\n"
+            "  python AtlUserSuspend.py --file users.csv --dry-run\n"
         )
     )
     p.add_argument('--org', required=False,
                    help='Organization ID (or set ATLASSIAN_ORG env var)')
-    p.add_argument('-d', '--before-date', required=True,
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument('-d', '--before-date',
                    help='Cutoff date in DD.MM.YYYY format. Accounts last active BEFORE this date will be suspended.')
+    mode.add_argument('-f', '--file',
+                   help='CSV file containing one email address per row, without a header')
     p.add_argument('--exclude-domain', action='append', default=[],
                    help='Domain(s) to exclude from suspension (can be specified multiple times)')
     p.add_argument('--include-never-active', action='store_true',
@@ -306,12 +342,21 @@ def main():
                    help='Preview suspensions without performing them')
     args = p.parse_args()
 
-    # Parse cutoff date
-    try:
-        cutoff_date = datetime.strptime(args.before_date, "%d.%m.%Y").replace(tzinfo=timezone.utc)
-    except ValueError:
-        print(f"Error: Invalid date format '{args.before_date}'. Expected DD.MM.YYYY (e.g. 01.01.2023)", file=sys.stderr)
-        sys.exit(2)
+    cutoff_date = None
+    if args.before_date:
+        try:
+            cutoff_date = datetime.strptime(args.before_date, "%d.%m.%Y").replace(tzinfo=timezone.utc)
+        except ValueError:
+            print(f"Error: Invalid date format '{args.before_date}'. Expected DD.MM.YYYY (e.g. 01.01.2023)", file=sys.stderr)
+            sys.exit(2)
+
+    requested_emails = []
+    if args.file:
+        try:
+            requested_emails = load_email_file(args.file)
+        except (OSError, csv.Error) as exc:
+            print(f"Error: Could not read CSV file '{args.file}': {exc}", file=sys.stderr)
+            sys.exit(2)
 
     # Org ID
     org_id = (args.org or os.getenv("ATLASSIAN_ORG") or "").strip()
@@ -339,7 +384,7 @@ def main():
         print("No users found in org.")
         return
 
-    # Filter: active accounts, last active before cutoff
+    # Filter: active accounts selected by date or by email.
     exclude_domains = set(d.lower().strip() for d in args.exclude_domain)
     candidates = []
     skipped_inactive = 0
@@ -349,7 +394,22 @@ def main():
     skipped_service_account = 0
     results = []
 
-    for u in all_users:
+    users_by_email = {u["email"].strip().lower(): u for u in all_users if u.get("email")}
+    if args.file:
+        for email in requested_emails:
+            user = users_by_email.get(email.lower())
+            if not user:
+                results.append(result_for({"email": email}, "skipped", "User not found"))
+                continue
+            if (user.get("account_status") or "").lower() != "active":
+                results.append(result_for(user, "skipped", "Already inactive"))
+                continue
+            if exclude_domains and domain_of(user["email"]) in exclude_domains:
+                results.append(result_for(user, "skipped", "Excluded domain"))
+                continue
+            candidates.append(user)
+
+    for u in all_users if args.before_date else []:
         # only suspend active accounts (normalize casing and handle missing key)
         if (u.get("account_status") or "").lower() != "active":
             skipped_inactive += 1
@@ -377,7 +437,8 @@ def main():
 
     # Report
     action = "DRY RUN" if args.dry_run else "LIVE"
-    print(f"\nSuspend mode [{action}]: suspending active accounts last active before {args.before_date}")
+    mode_description = f"emails from {args.file}" if args.file else f"last active before {args.before_date}"
+    print(f"\nSuspend mode [{action}]: suspending active accounts selected by {mode_description}")
     if exclude_domains:
         print(f"  Excluding domains: {', '.join(sorted(exclude_domains))}")
     print(f"  Candidates for suspension: {len(candidates)}")
@@ -400,54 +461,26 @@ def main():
         job_title = get_user_profile(u["account_id"], org_headers, session=session)
         if job_title is None:
             warn(f"  Could not verify profile for {u['email']} — skipping")
-            results.append({
-                "email": u["email"],
-                "name": u["name"],
-                "account_id": u["account_id"],
-                "last_active": u["last_active"],
-                "action": "skipped",
-                "reason": "Profile unavailable",
-            })
+            results.append(result_for(u, "skipped", "Profile unavailable"))
             continue
 
         if is_service_account_job_title(job_title):
             skipped_service_account += 1
             print(f"{YELLOW}    Skipped: {u['email']} — Service Account — skipped{RESET}")
-            results.append({
-                "email": u["email"],
-                "name": u["name"],
-                "account_id": u["account_id"],
-                "last_active": u["last_active"],
-                "action": "skipped",
-                "reason": "Service Account",
-            })
+            results.append(result_for(u, "skipped", "Service Account"))
             continue
 
-        ok = suspend_user(u["account_id"], org_headers, dry_run=args.dry_run, session=session)
+        ok = suspend_user(org_id, u, org_headers, dry_run=args.dry_run, session=session)
         if ok:
             if not args.dry_run:
                 success(f"    Suspended: {u['email']}")
             else:
                 print(f"    Would suspend: {u['email']}")
-            suspended.append({
-                "email": u["email"],
-                "name": u["name"],
-                "account_id": u["account_id"],
-                "last_active": u["last_active"],
-                "action": "suspended" if not args.dry_run else "would_suspend",
-                "reason": "",
-            })
+            suspended.append(result_for(u, "suspended" if not args.dry_run else "would_suspend"))
             results.append(suspended[-1])
         else:
             failed += 1
-            results.append({
-                "email": u["email"],
-                "name": u["name"],
-                "account_id": u["account_id"],
-                "last_active": u["last_active"],
-                "action": "failed",
-                "reason": "Suspension failed",
-            })
+            results.append(result_for(u, "failed", "Suspension failed"))
 
     # Write results
     if results:
@@ -461,7 +494,7 @@ def main():
     label = "Suspended" if not args.dry_run else "Would suspend"
     print(f"\nSummary:")
     print(f"  Org users loaded:          {len(all_users)}")
-    print(f"  Cutoff date:               {args.before_date}")
+    print(f"  Selection:                 {mode_description}")
     print(f"  Candidates:                {len(candidates)}")
     print(f"  {label:<15} {len(suspended)}")
     print(f"  Skipped (Service Account): {skipped_service_account}")

@@ -87,6 +87,17 @@
 ### Communication
 30. Keep progress updates concise and low-token by default; expand only when blocked or when a decision requires user input.
 
+## AtlSuspendActiveUsers Usage
+
+The script supports either date-based selection or a CSV selection, but not both:
+
+```text
+python AtlSuspendActiveUsers.py --before-date 01.01.2023
+python AtlSuspendActiveUsers.py --file users.csv --dry-run
+```
+
+The CSV must contain one email address per row, without a header. UTF-8 and UTF-8-BOM files are accepted; whitespace is stripped and blank rows are ignored. Managed accounts are suspended through the lifecycle API, while external/unmanaged accounts use organization-level suspend access. Missing users are recorded as `User not found`.
+
 ## Anti-Patterns to Avoid
 
 These patterns waste tokens and violate credit-efficiency rules:
