@@ -45,7 +45,8 @@ Arguments (summary)
 
 Behavior notes
 --------------
-- The script paginates the Atlassian Admin API to load all managed users.
+- Date mode paginates the Atlassian Admin API to load all organization users. File mode skips that pagination and looks up each email through the Jira Site User Search API (`GET /rest/api/3/user/search?query=...`).
+- File mode matches `emailAddress` exactly, case-insensitively, and uses the returned account ID, display name, active status, and account type.
 - CSV input accepts UTF-8 and UTF-8-BOM files, strips whitespace, and ignores blank rows.
 - Users not found in the organization are recorded as skipped with reason `User not found`.
 - Managed accounts use User Management lifecycle disable. External/unmanaged accounts use organization-level suspend access, avoiding the lifecycle API 403 response.

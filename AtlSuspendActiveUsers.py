@@ -159,6 +159,43 @@ def get_user_profile(account_id, headers, session=None):
     return jt if jt is not None else ""
 
 
+def search_site_user(email, headers, session=None):
+    """Find a site user by exact, case-insensitive email address."""
+    email = email.strip()
+    url = f"{get_site_base_url()}/rest/api/3/user/search"
+    try:
+        resp = request_with_retries(
+            session,
+            "GET",
+            url,
+            headers=headers,
+            params={"query": email, "maxResults": 50},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        users = resp.json()
+    except (RequestException, ValueError) as exc:
+        warn(f"Could not search Jira site users for {email}: {exc}")
+        return None
+
+    if not isinstance(users, list):
+        return None
+    for user in users:
+        email_address = (user.get("emailAddress") or "").strip()
+        if email_address.lower() != email.lower():
+            continue
+        return {
+            "email": email_address,
+            "account_id": user.get("accountId"),
+            "name": user.get("displayName", ""),
+            "account_status": "active" if user.get("active") else "inactive",
+            "account_type": user.get("accountType", ""),
+            "last_active": None,
+            "product_access": [],
+        }
+    return None
+
+
 def parse_last_active(last_active_str):
     """Parse the last_active ISO timestamp into a datetime object (UTC).
 
@@ -229,7 +266,9 @@ def normalize_account_type(account_type):
     normalized = (account_type or "").strip().lower().replace("_", "-")
     if normalized in {"external", "unmanaged", "unmanaged-account", "external-account"}:
         return "external"
-    return "managed"
+    if normalized in {"managed", "managed-account", "atlassian"}:
+        return "managed"
+    return "unknown"
 
 
 def suspend_user(org_id, user, headers, dry_run=False, session=None):
@@ -239,7 +278,7 @@ def suspend_user(org_id, user, headers, dry_run=False, session=None):
         warn("Cannot suspend user without account_id")
         return False
 
-    if normalize_account_type(user.get("account_type")) == "managed":
+    if normalize_account_type(user.get("account_type")) != "external":
         url = f"{USER_MGMT_API_BASE_URL}/{account_id}/manage/lifecycle/disable"
     else:
         url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/users/{account_id}/suspend"
@@ -376,13 +415,15 @@ def main():
     site_headers = get_site_auth_header()
     session = create_request_session()
 
-    # Load ALL org users
-    print(f"Loading all managed users from org {org_id}...")
-    all_users = load_all_org_users(org_id, org_headers, session=session)
-
-    if not all_users:
-        print("No users found in org.")
-        return
+    # File mode searches the Jira site directly; date mode loads the org directory.
+    if args.file:
+        all_users = []
+    else:
+        print(f"Loading all managed users from org {org_id}...")
+        all_users = load_all_org_users(org_id, org_headers, session=session)
+        if not all_users:
+            print("No users found in org.")
+            return
 
     # Filter: active accounts selected by date or by email.
     exclude_domains = set(d.lower().strip() for d in args.exclude_domain)
@@ -391,20 +432,23 @@ def main():
     skipped_domain = 0
     skipped_recent = 0
     skipped_never_active = 0
+    skipped_not_found = 0
     skipped_service_account = 0
     results = []
 
-    users_by_email = {u["email"].strip().lower(): u for u in all_users if u.get("email")}
     if args.file:
         for email in requested_emails:
-            user = users_by_email.get(email.lower())
+            user = search_site_user(email, site_headers, session=session)
             if not user:
+                skipped_not_found += 1
                 results.append(result_for({"email": email}, "skipped", "User not found"))
                 continue
             if (user.get("account_status") or "").lower() != "active":
+                skipped_inactive += 1
                 results.append(result_for(user, "skipped", "Already inactive"))
                 continue
             if exclude_domains and domain_of(user["email"]) in exclude_domains:
+                skipped_domain += 1
                 results.append(result_for(user, "skipped", "Excluded domain"))
                 continue
             candidates.append(user)
@@ -444,12 +488,22 @@ def main():
     print(f"  Candidates for suspension: {len(candidates)}")
     print(f"  Skipped (already inactive): {skipped_inactive}")
     print(f"  Skipped (excluded domain):  {skipped_domain}")
+    print(f"  Skipped (user not found):   {skipped_not_found}")
     print(f"  Skipped (active after cutoff): {skipped_recent}")
     print(f"  Skipped (never active, not included): {skipped_never_active}")
     print(f"  Skipped (Service Account): {skipped_service_account}")
 
+    if not candidates and not results:
+        print("\nNo accounts to suspend.")
+        return
+
     if not candidates:
         print("\nNo accounts to suspend.")
+        out_path = get_available_filename(args.out)
+        if out_path != args.out:
+            warn(f"Output file {args.out} exists, writing to: {out_path}")
+        write_results_csv(out_path, results)
+        print(f"Wrote results to: {out_path}")
         return
 
     # Suspend
