@@ -212,123 +212,67 @@ def parse_last_active(last_active_str):
 
 
 def load_all_org_users(org_id, headers, session=None):
-    """Paginate all users with access to the organization.
+    """Search and paginate all users with access to the organization.
 
     Returns list of dicts with email, account_id, name, account_status, last_active, product_access.
     """
-    url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/users"
+    url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/users/search"
     all_users = []
     page = 0
-
-    def _get(u):
-        return request_with_retries(session, 'GET', u, headers=headers, timeout=30)
 
     while url:
         page += 1
         print(f"  Loading users page {page}...", end="\r")
-        resp = _get(url)
+        resp = request_with_retries(
+            session,
+            "POST",
+            url,
+            headers=headers,
+            json={},
+            timeout=30,
+        )
         resp.raise_for_status()
         data = resp.json()
 
         for u in data.get("data", []):
-            email = u.get("email")
-            if email:
-                product_access = u.get("product_access") or []
-                # determine last_active: use top-level or max from product_access
-                last_active_str = u.get("last_active")
-                if not last_active_str and product_access:
-                    # fall back to most recent product-level last_active
-                    product_dates = [p.get("last_active") for p in product_access if p.get("last_active")]
-                    if product_dates:
-                        last_active_str = max(
-                            product_dates,
-                            key=lambda s: parse_last_active(s) or datetime.min.replace(tzinfo=timezone.utc)
-                        )
-                all_users.append({
-                    "email": email,
-                    "account_id": u.get("account_id") or u.get("accountId"),
-                    "name": u.get("name", ""),
-                    "account_status": u.get("account_status", ""),
-                    "account_type": u.get("account_type") or u.get("accountType") or (
-                        "managed" if u.get("is_managed") or u.get("managed") else ""
-                    ),
-                    "last_active": last_active_str,
-                    "product_access": product_access,
-                })
+            email = u.get("email") or u.get("emailAddress")
+            if not email:
+                continue
+            product_access = u.get("product_access") or u.get("productAccess") or []
+            last_active_str = u.get("last_active") or u.get("lastActive")
+            if not last_active_str and product_access:
+                product_dates = [
+                    p.get("last_active") or p.get("lastActive")
+                    for p in product_access
+                    if p.get("last_active") or p.get("lastActive")
+                ]
+                if product_dates:
+                    last_active_str = max(
+                        product_dates,
+                        key=lambda value: parse_last_active(value) or datetime.min.replace(tzinfo=timezone.utc),
+                    )
+
+            if "is_managed" in u:
+                account_type = "managed" if u["is_managed"] else "external"
+            elif "managed" in u:
+                account_type = "managed" if u["managed"] else "external"
+            else:
+                account_type = u.get("account_type") or u.get("accountType") or ""
+
+            all_users.append({
+                "email": email,
+                "account_id": u.get("account_id") or u.get("accountId"),
+                "name": u.get("name") or u.get("displayName", ""),
+                "account_status": u.get("account_status") or u.get("accountStatus") or u.get("status", ""),
+                "account_type": account_type,
+                "last_active": last_active_str,
+                "product_access": product_access,
+            })
 
         next_link = data.get("links", {}).get("next")
         url = next_link if next_link else None
 
     print(f"  Loaded {len(all_users)} users across {page} pages.")
-    return all_users
-
-
-def load_all_directory_users(org_id, headers, session=None):
-    """Load users from every organization directory, including external users."""
-    directories_url = f"{DEFAULT_SITE}/admin/v2/orgs/{org_id}/directories"
-    try:
-        resp = request_with_retries(session, "GET", directories_url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        directories_data = resp.json()
-    except (RequestException, ValueError) as exc:
-        warn(f"Could not load organization directories: {exc}")
-        return []
-
-    directories = directories_data.get("data", []) if isinstance(directories_data, dict) else []
-    all_users = []
-    for directory in directories:
-        directory_id = directory.get("id") or directory.get("directory_id")
-        if not directory_id:
-            continue
-
-        url = f"{DEFAULT_SITE}/admin/v2/orgs/{org_id}/directories/{directory_id}/users/search"
-        while url:
-            try:
-                resp = request_with_retries(
-                    session,
-                    "POST",
-                    url,
-                    headers=headers,
-                    json={},
-                    timeout=30,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-            except (RequestException, ValueError) as exc:
-                warn(f"Could not load users from directory {directory_id}: {exc}")
-                break
-
-            users = data.get("data", []) if isinstance(data, dict) else []
-            for user in users:
-                email = user.get("email") or user.get("emailAddress")
-                account_id = user.get("account_id") or user.get("accountId")
-                if not email or not account_id:
-                    continue
-                product_access = user.get("product_access") or user.get("productAccess") or []
-                last_active = user.get("last_active") or user.get("lastActive")
-                if not last_active and product_access:
-                    product_dates = [
-                        product.get("last_active") or product.get("lastActive")
-                        for product in product_access
-                        if product.get("last_active") or product.get("lastActive")
-                    ]
-                    if product_dates:
-                        last_active = max(
-                            product_dates,
-                            key=lambda value: parse_last_active(value) or datetime.min.replace(tzinfo=timezone.utc),
-                        )
-                all_users.append({
-                    "email": email,
-                    "account_id": account_id,
-                    "name": user.get("name") or user.get("displayName", ""),
-                    "account_status": user.get("account_status") or user.get("accountStatus") or user.get("status", ""),
-                    "account_type": user.get("account_type") or user.get("accountType") or "external",
-                    "last_active": last_active,
-                    "product_access": product_access,
-                })
-
-            url = data.get("links", {}).get("next") if isinstance(data, dict) else None
-
     return all_users
 
 
@@ -503,14 +447,12 @@ def main():
     site_headers = get_site_auth_header()
     session = create_request_session()
 
-    # File mode searches the Jira site directly; date mode loads the org directory.
+    # File mode searches the Jira site directly; date mode searches the organization.
     if args.file:
         all_users = []
     else:
         print(f"Loading all organization users from org {org_id}...")
-        managed_users = load_all_org_users(org_id, org_headers, session=session)
-        directory_users = load_all_directory_users(org_id, org_headers, session=session)
-        all_users = merge_org_users(managed_users, directory_users)
+        all_users = load_all_org_users(org_id, org_headers, session=session)
         if not all_users:
             print("No users found in org.")
             return
