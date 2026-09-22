@@ -341,7 +341,11 @@ def merge_org_users(*user_lists):
             if not key:
                 continue
             existing = merged.get(key, {})
-            merged[key] = {**existing, **{field: value for field, value in user.items() if value not in (None, "", [])}}
+            merged[key] = {
+                "last_active": None,
+                **existing,
+                **{field: value for field, value in user.items() if value not in (None, "", [])},
+            }
     return list(merged.values())
 
 def normalize_account_type(account_type):
@@ -550,7 +554,7 @@ def main():
             skipped_domain += 1
             continue
 
-        last_active_dt = parse_last_active(u["last_active"])
+        last_active_dt = parse_last_active(u.get("last_active"))
 
         if last_active_dt is None:
             # never active
