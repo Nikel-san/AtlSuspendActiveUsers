@@ -45,7 +45,7 @@ Arguments (summary)
 
 Behavior notes
 --------------
-- Date mode paginates the Atlassian Admin API to load all organization users. File mode skips that pagination and looks up each email through the Jira Site User Search API (`GET /rest/api/3/user/search?query=...`).
+- Date mode loads managed users from the organization users API and discovers external users through every organization directory (`GET /admin/v2/orgs/{org_id}/directories` and `POST /admin/v2/orgs/{org_id}/directories/{directory_id}/users/search`). File mode skips that pagination and looks up each email through the Jira Site User Search API (`GET /rest/api/3/user/search?query=...`).
 - File mode matches a populated `emailAddress` exactly, case-insensitively, and accepts a result with a privacy-redacted email address because the search query is the requested email. It uses the returned account ID, display name, active status, and account type.
 - CSV input accepts UTF-8 and UTF-8-BOM files, strips whitespace, and ignores blank rows.
 - Users not found in the organization are recorded as skipped with reason `User not found`.

@@ -262,6 +262,88 @@ def load_all_org_users(org_id, headers, session=None):
     print(f"  Loaded {len(all_users)} users across {page} pages.")
     return all_users
 
+
+def load_all_directory_users(org_id, headers, session=None):
+    """Load users from every organization directory, including external users."""
+    directories_url = f"{DEFAULT_SITE}/admin/v2/orgs/{org_id}/directories"
+    try:
+        resp = request_with_retries(session, "GET", directories_url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        directories_data = resp.json()
+    except (RequestException, ValueError) as exc:
+        warn(f"Could not load organization directories: {exc}")
+        return []
+
+    directories = directories_data.get("data", []) if isinstance(directories_data, dict) else []
+    all_users = []
+    for directory in directories:
+        directory_id = directory.get("id") or directory.get("directory_id")
+        if not directory_id:
+            continue
+
+        url = f"{DEFAULT_SITE}/admin/v2/orgs/{org_id}/directories/{directory_id}/users/search"
+        while url:
+            try:
+                resp = request_with_retries(
+                    session,
+                    "POST",
+                    url,
+                    headers=headers,
+                    json={},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except (RequestException, ValueError) as exc:
+                warn(f"Could not load users from directory {directory_id}: {exc}")
+                break
+
+            users = data.get("data", []) if isinstance(data, dict) else []
+            for user in users:
+                email = user.get("email") or user.get("emailAddress")
+                account_id = user.get("account_id") or user.get("accountId")
+                if not email or not account_id:
+                    continue
+                product_access = user.get("product_access") or user.get("productAccess") or []
+                last_active = user.get("last_active") or user.get("lastActive")
+                if not last_active and product_access:
+                    product_dates = [
+                        product.get("last_active") or product.get("lastActive")
+                        for product in product_access
+                        if product.get("last_active") or product.get("lastActive")
+                    ]
+                    if product_dates:
+                        last_active = max(
+                            product_dates,
+                            key=lambda value: parse_last_active(value) or datetime.min.replace(tzinfo=timezone.utc),
+                        )
+                all_users.append({
+                    "email": email,
+                    "account_id": account_id,
+                    "name": user.get("name") or user.get("displayName", ""),
+                    "account_status": user.get("account_status") or user.get("accountStatus") or user.get("status", ""),
+                    "account_type": user.get("account_type") or user.get("accountType") or "external",
+                    "last_active": last_active,
+                    "product_access": product_access,
+                })
+
+            url = data.get("links", {}).get("next") if isinstance(data, dict) else None
+
+    return all_users
+
+
+def merge_org_users(*user_lists):
+    """Merge discovery results while retaining one record per organization user."""
+    merged = {}
+    for users in user_lists:
+        for user in users:
+            key = user.get("account_id") or user.get("email", "").lower()
+            if not key:
+                continue
+            existing = merged.get(key, {})
+            merged[key] = {**existing, **{field: value for field, value in user.items() if value not in (None, "", [])}}
+    return list(merged.values())
+
 def normalize_account_type(account_type):
     normalized = (account_type or "").strip().lower().replace("_", "-")
     if normalized in {"external", "unmanaged", "unmanaged-account", "external-account"}:
@@ -421,8 +503,10 @@ def main():
     if args.file:
         all_users = []
     else:
-        print(f"Loading all managed users from org {org_id}...")
-        all_users = load_all_org_users(org_id, org_headers, session=session)
+        print(f"Loading all organization users from org {org_id}...")
+        managed_users = load_all_org_users(org_id, org_headers, session=session)
+        directory_users = load_all_directory_users(org_id, org_headers, session=session)
+        all_users = merge_org_users(managed_users, directory_users)
         if not all_users:
             print("No users found in org.")
             return
