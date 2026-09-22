@@ -119,7 +119,14 @@ def request_with_retries(session, method, url, headers=None, params=None, json=N
     """Perform an HTTP request using a session configured with retries."""
     if session is None:
         session = create_request_session()
-    return session.request(method, url, headers=headers, params=params, json=json, timeout=timeout)
+    request_kwargs = {
+        "headers": headers,
+        "params": params,
+        "timeout": timeout,
+    }
+    if json is not None:
+        request_kwargs["json"] = json
+    return session.request(method, url, **request_kwargs)
 
 
 def is_service_account_job_title(job_title: str) -> bool:
@@ -256,7 +263,7 @@ def load_all_org_users(org_id, headers, session=None):
             elif "managed" in u:
                 account_type = "managed" if u["managed"] else "external"
             else:
-                account_type = u.get("account_type") or u.get("accountType") or ""
+                account_type = u.get("account_type") or u.get("accountType") or "managed"
 
             all_users.append({
                 "email": email,
