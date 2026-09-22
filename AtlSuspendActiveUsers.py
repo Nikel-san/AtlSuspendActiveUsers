@@ -212,23 +212,22 @@ def parse_last_active(last_active_str):
 
 
 def load_all_org_users(org_id, headers, session=None):
-    """Search and paginate all users with access to the organization.
+    """Paginate all organization users via the Admin v1 users endpoint.
 
     Returns list of dicts with email, account_id, name, account_status, last_active, product_access.
     """
-    url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/users/search"
+    url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/users"
     all_users = []
     page = 0
 
     while url:
         page += 1
-        print(f"  Loading users page {page}...", end="\r")
+        print(f"  Loading organization users page {page}...", end="\r")
         resp = request_with_retries(
             session,
-            "POST",
+            "GET",
             url,
             headers=headers,
-            json={},
             timeout=30,
         )
         resp.raise_for_status()
@@ -273,6 +272,55 @@ def load_all_org_users(org_id, headers, session=None):
         url = next_link if next_link else None
 
     print(f"  Loaded {len(all_users)} users across {page} pages.")
+    return all_users
+
+
+def load_all_site_users(headers, session=None):
+    """Paginate Jira site users to discover accounts absent from the org list."""
+    url = f"{get_site_base_url()}/rest/api/3/users/search"
+    all_users = []
+    start_at = 0
+    max_results = 1000
+
+    while True:
+        try:
+            resp = request_with_retries(
+                session,
+                "GET",
+                url,
+                headers=headers,
+                params={"startAt": start_at, "maxResults": max_results},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            users = resp.json()
+        except (RequestException, ValueError) as exc:
+            warn(f"Could not load Jira site users: {exc}")
+            break
+
+        if not isinstance(users, list):
+            break
+
+        for user in users:
+            email = user.get("emailAddress") or user.get("email")
+            account_id = user.get("accountId") or user.get("account_id")
+            if not email or not account_id:
+                continue
+            account_type = user.get("accountType") or user.get("account_type")
+            all_users.append({
+                "email": email,
+                "account_id": account_id,
+                "name": user.get("displayName") or user.get("name", ""),
+                "account_status": "active" if user.get("active") else "inactive",
+                "account_type": "managed" if account_type == "atlassian" else "external",
+                "last_active": None,
+                "product_access": [],
+            })
+
+        if len(users) < max_results:
+            break
+        start_at += len(users)
+
     return all_users
 
 
@@ -447,12 +495,14 @@ def main():
     site_headers = get_site_auth_header()
     session = create_request_session()
 
-    # File mode searches the Jira site directly; date mode searches the organization.
+    # File mode searches the Jira site directly; date mode combines org and site discovery.
     if args.file:
         all_users = []
     else:
         print(f"Loading all organization users from org {org_id}...")
-        all_users = load_all_org_users(org_id, org_headers, session=session)
+        org_users = load_all_org_users(org_id, org_headers, session=session)
+        site_users = load_all_site_users(site_headers, session=session)
+        all_users = merge_org_users(org_users, site_users)
         if not all_users:
             print("No users found in org.")
             return

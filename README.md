@@ -45,7 +45,7 @@ Arguments (summary)
 
 Behavior notes
 --------------
-- Date mode discovers managed and external users with `POST /admin/v1/orgs/{org_id}/users/search`. The response is paginated through `links.next`, and `is_managed` determines the account type. File mode skips organization-user pagination and looks up each email through the Jira Site User Search API (`GET /rest/api/3/user/search?query=...`).
+- Date mode combines managed organization users from `GET /admin/v1/orgs/{org_id}/users` with Jira site users from `GET /rest/api/3/users/search`. Organization responses use `links.next` pagination; site responses use `startAt` and `maxResults`. The two lists are merged by account ID, preserving organization activity data when both sources contain the same account.
 - File mode matches a populated `emailAddress` exactly, case-insensitively, and accepts a result with a privacy-redacted email address because the search query is the requested email. It uses the returned account ID, display name, active status, and account type.
 - CSV input accepts UTF-8 and UTF-8-BOM files, strips whitespace, and ignores blank rows.
 - Users not found in the organization are recorded as skipped with reason `User not found`.
