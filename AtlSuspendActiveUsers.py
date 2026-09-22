@@ -269,7 +269,7 @@ def normalize_account_type(account_type):
     if normalized in {"managed", "managed-account"}:
         return "managed"
     if normalized == "atlassian":
-        return "external"
+        return "managed"
     return "unknown"
 
 
@@ -514,15 +514,14 @@ def main():
 
     for i, u in enumerate(candidates, 1):
         print(f"  [{i}/{len(candidates)}] Suspending {u['email']} (last active: {u['last_active'] or 'never'})...")
-        if normalize_account_type(u.get("account_type")) == "external":
-            print(f"  External account: skipping managed profile check for {u['email']}")
-            job_title = ""
-        else:
+        if u.get("account_id"):
             job_title = get_user_profile(u["account_id"], org_headers, session=session)
             if job_title is None:
                 warn(f"  Could not verify profile for {u['email']} — skipping")
                 results.append(result_for(u, "skipped", "Profile unavailable"))
                 continue
+        else:
+            job_title = ""
 
         if is_service_account_job_title(job_title):
             skipped_service_account += 1

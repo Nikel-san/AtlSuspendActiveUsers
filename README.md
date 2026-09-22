@@ -49,12 +49,12 @@ Behavior notes
 - File mode matches a populated `emailAddress` exactly, case-insensitively, and accepts a result with a privacy-redacted email address because the search query is the requested email. It uses the returned account ID, display name, active status, and account type.
 - CSV input accepts UTF-8 and UTF-8-BOM files, strips whitespace, and ignores blank rows.
 - Users not found in the organization are recorded as skipped with reason `User not found`.
-- Managed accounts use User Management lifecycle disable. External/unmanaged accounts, including Jira users reported with `accountType="atlassian"`, use `POST /admin/v1/orgs/{org_id}/directory/users/{account_id}/suspend-access`, avoiding the lifecycle API 403 response.
+- Managed accounts, including Jira users reported with `accountType="atlassian"`, use User Management lifecycle disable. External/unmanaged accounts use `POST /admin/v1/orgs/{org_id}/directory/users/{account_id}/suspend-access`.
 - Output CSV columns are `email`, `name`, `account_id`, `account_type`, `last_active`, `action`, and `reason`.
 - When the top-level last_active is missing, the script falls back to the most recent product-level last_active.
 - Account status comparisons are case-insensitive.
 - Before suspension, the script calls the user profile endpoint and checks the job title. If the title contains "Service Account" (case-insensitive), the user is skipped and recorded in the CSV with action="skipped" and reason="Service Account".
-- External accounts skip the managed-only profile endpoint and proceed directly to organization-level suspension; managed accounts retain the profile lookup and service-account safety check.
+- Accounts with an account ID are checked through the profile endpoint before suspension so service-account job titles are honored consistently.
 - If the profile endpoint cannot be fetched, the user is skipped with action="skipped" and reason="Profile unavailable" instead of being suspended.
 - HTTP requests use a retry-enabled session for 429 and 5xx responses.
 - The script prints ANSI-colored messages; on Windows you may want to enable VT100 support or use colorama.
