@@ -48,6 +48,7 @@ Behavior notes
 --------------
 - Date mode combines managed organization users from `GET /admin/v1/orgs/{org_id}/users` with Jira site users from `GET /rest/api/3/users/search` and product access group members from `GET /rest/api/3/group/member`. Organization responses use `links.next` pagination; site and group responses use paginated requests. The lists are merged by account ID, preserving organization activity data when both sources contain the same account.
 - Site and product-group users without a visible email are retained with the stable identifier `<account_id>@external.atlassian`.
+- App principals, JSM portal customers, and accounts whose ID starts with `qm:` are excluded from site discovery because they cannot be suspended through the organization APIs.
 - Invited accounts are skipped by default; `--include-invited` includes invited accounts older than the cutoff or never active, and routes them through directory suspension.
 - File mode matches a populated `emailAddress` exactly, case-insensitively, and accepts a result with a privacy-redacted email address because the search query is the requested email. It uses the returned account ID, display name, active status, and account type.
 - CSV input accepts UTF-8 and UTF-8-BOM files, strips whitespace, and ignores blank rows.

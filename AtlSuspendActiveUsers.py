@@ -212,6 +212,12 @@ def search_site_user(email, headers, session=None):
     return None
 
 
+def is_non_manageable_site_principal(account_id, account_type):
+    normalized_type = (account_type or "").strip().lower()
+    normalized_id = (account_id or "").strip().lower()
+    return normalized_type in {"app", "customer"} or normalized_id.startswith("qm:")
+
+
 def parse_last_active(last_active_str):
     """Parse the last_active ISO timestamp into a datetime object (UTC).
 
@@ -322,8 +328,10 @@ def load_all_site_users(headers, session=None):
             account_id = user.get("accountId") or user.get("account_id")
             if not account_id:
                 continue
-            email = email or f"{account_id}@external.atlassian"
             account_type = user.get("accountType") or user.get("account_type")
+            if is_non_manageable_site_principal(account_id, account_type):
+                continue
+            email = email or f"{account_id}@external.atlassian"
             account_status = (
                 user.get("accountStatus")
                 or user.get("status")
@@ -380,6 +388,8 @@ def load_all_product_group_users(headers, session=None):
                 if not account_id:
                     continue
                 account_type = user.get("accountType") or user.get("account_type")
+                if is_non_manageable_site_principal(account_id, account_type):
+                    continue
                 email = user.get("emailAddress") or user.get("email")
                 account_status = (
                     user.get("accountStatus")
