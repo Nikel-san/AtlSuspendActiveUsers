@@ -50,6 +50,7 @@ Behavior notes
 - CSV input accepts UTF-8 and UTF-8-BOM files, strips whitespace, and ignores blank rows.
 - Users not found in the organization are recorded as skipped with reason `User not found`.
 - Managed accounts, including Jira users reported with `accountType="atlassian"`, use User Management lifecycle disable. External/unmanaged accounts use `POST /admin/v1/orgs/{org_id}/directory/users/{account_id}/suspend-access`.
+- If lifecycle disable returns the verified-org-admin HTTP 403 for an account classified as managed, the script retries suspension through the organization directory endpoint.
 - Output CSV columns are `email`, `name`, `account_id`, `account_type`, `last_active`, `action`, and `reason`.
 - When the top-level last_active is missing, the script falls back to the most recent product-level last_active.
 - Account status comparisons are case-insensitive.

@@ -423,12 +423,12 @@ def suspend_user(org_id, user, headers, dry_run=False, session=None):
     account_id = user.get("account_id")
     if not account_id:
         warn("Cannot suspend user without account_id")
-        return False
+        return False, "Missing account_id"
 
-    if normalize_account_type(user.get("account_type")) != "external":
-        url = f"{USER_MGMT_API_BASE_URL}/{account_id}/manage/lifecycle/disable"
-    else:
-        url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/directory/users/{account_id}/suspend-access"
+    is_external = normalize_account_type(user.get("account_type")) == "external"
+    lifecycle_url = f"{USER_MGMT_API_BASE_URL}/{account_id}/manage/lifecycle/disable"
+    directory_url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/directory/users/{account_id}/suspend-access"
+    url = directory_url if is_external else lifecycle_url
     if dry_run:
         print(f"  DRY RUN: POST {url}")
         return True, ""
@@ -441,6 +441,22 @@ def suspend_user(org_id, user, headers, dry_run=False, session=None):
 
     if resp.status_code in (200, 204):
         return True, ""
+
+    if (
+        resp.status_code == 403
+        and url == lifecycle_url
+        and "verified org admin" in resp.text.lower()
+    ):
+        warn(f"  Lifecycle suspension denied for {account_id}; trying directory suspension.")
+        try:
+            resp = request_with_retries(
+                session, "POST", directory_url, headers=headers, timeout=20
+            )
+        except RequestException as e:
+            error(f"  Directory suspend request failed for {account_id}: {e}")
+            return False, "Suspension request failed"
+        if resp.status_code in (200, 204):
+            return True, ""
 
     if resp.status_code == 409:
         reason = "Billing administrator conflict"
