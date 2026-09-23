@@ -320,14 +320,20 @@ def load_all_site_users(headers, session=None):
         for user in users:
             email = user.get("emailAddress") or user.get("email")
             account_id = user.get("accountId") or user.get("account_id")
-            if not email or not account_id:
+            if not account_id:
                 continue
+            email = email or f"{account_id}@external.atlassian"
             account_type = user.get("accountType") or user.get("account_type")
+            account_status = (
+                user.get("accountStatus")
+                or user.get("status")
+                or ("active" if user.get("active") else "inactive")
+            )
             all_users.append({
                 "email": email,
                 "account_id": account_id,
                 "name": user.get("displayName") or user.get("name", ""),
-                "account_status": "active" if user.get("active") else "inactive",
+                "account_status": account_status,
                 "account_type": "managed" if account_type == "atlassian" else "external",
                 "last_active": None,
                 "product_access": [],
@@ -374,11 +380,17 @@ def load_all_product_group_users(headers, session=None):
                 if not account_id:
                     continue
                 account_type = user.get("accountType") or user.get("account_type")
+                email = user.get("emailAddress") or user.get("email")
+                account_status = (
+                    user.get("accountStatus")
+                    or user.get("status")
+                    or ("active" if user.get("active") else "inactive")
+                )
                 all_users.append({
-                    "email": user.get("emailAddress") or user.get("email", ""),
+                    "email": email or f"{account_id}@external.atlassian",
                     "account_id": account_id,
                     "name": user.get("displayName") or user.get("name", ""),
-                    "account_status": "active" if user.get("active") else "inactive",
+                    "account_status": account_status,
                     "account_type": "managed" if account_type == "atlassian" else "external",
                     "last_active": None,
                     "product_access": [],
@@ -425,7 +437,10 @@ def suspend_user(org_id, user, headers, dry_run=False, session=None):
         warn("Cannot suspend user without account_id")
         return False, "Missing account_id"
 
-    is_external = normalize_account_type(user.get("account_type")) == "external"
+    is_external = (
+        normalize_account_type(user.get("account_type")) == "external"
+        or (user.get("account_status") or "").lower() == "invited"
+    )
     lifecycle_url = f"{USER_MGMT_API_BASE_URL}/{account_id}/manage/lifecycle/disable"
     directory_url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/directory/users/{account_id}/suspend-access"
     url = directory_url if is_external else lifecycle_url
@@ -529,6 +544,7 @@ def main():
             "  python AtlUserSuspend.py -d 01.06.2024 --out suspended.csv\n"
             "  python AtlUserSuspend.py -d 01.01.2023 --exclude-domain example.com\n"
             "  python AtlUserSuspend.py -d 01.01.2023 --include-never-active\n"
+            "  python AtlUserSuspend.py -d 01.01.2023 --include-invited\n"
             "  python AtlUserSuspend.py --file users.csv --dry-run\n"
         )
     )
@@ -543,6 +559,8 @@ def main():
                    help='Domain(s) to exclude from suspension (can be specified multiple times)')
     p.add_argument('--include-never-active', action='store_true',
                    help='Also suspend accounts that have never been active (no last_active date)')
+    p.add_argument('--include-invited', action='store_true',
+                   help='Also suspend invited accounts, including those never active or older than the cutoff')
     p.add_argument('--out', required=False, default='atl_suspended_users.csv',
                    help='Output CSV file path (default: atl_suspended_users.csv)')
     p.add_argument('--dry-run', action='store_true',
@@ -625,8 +643,9 @@ def main():
             candidates.append(user)
 
     for u in all_users if args.before_date else []:
-        # only suspend active accounts (normalize casing and handle missing key)
-        if (u.get("account_status") or "").lower() != "active":
+        account_status = (u.get("account_status") or "").lower()
+        is_invited = account_status == "invited"
+        if account_status != "active" and not (is_invited and args.include_invited):
             skipped_inactive += 1
             continue
 
@@ -639,7 +658,7 @@ def main():
 
         if last_active_dt is None:
             # never active
-            if args.include_never_active:
+            if args.include_never_active or (is_invited and args.include_invited):
                 candidates.append(u)
             else:
                 skipped_never_active += 1
