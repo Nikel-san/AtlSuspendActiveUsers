@@ -37,6 +37,13 @@ from urllib3.util.retry import Retry
 DEFAULT_SITE = "https://api.atlassian.com"
 ADMIN_API_BASE_URL = f"{DEFAULT_SITE}/admin/v1"
 USER_MGMT_API_BASE_URL = f"{DEFAULT_SITE}/users"
+SITE_PRODUCT_GROUPS = (
+    "jira-software-users",
+    "confluence-users",
+    "jira-servicemanagement-users",
+    "jira-core-users",
+    "site-admins",
+)
 
 
 def get_site_base_url() -> str:
@@ -142,6 +149,8 @@ def get_user_profile(account_id, headers, session=None):
     url = f"{USER_MGMT_API_BASE_URL}/{account_id}/manage/profile"
     try:
         resp = request_with_retries(session, "GET", url, headers=headers, timeout=30)
+        if resp.status_code == 403:
+            return ""
         resp.raise_for_status()
         data = resp.json()
     except (RequestException, ValueError) as exc:
@@ -331,6 +340,57 @@ def load_all_site_users(headers, session=None):
     return all_users
 
 
+def load_all_product_group_users(headers, session=None):
+    """Paginate product access groups to discover external site accounts."""
+    url = f"{get_site_base_url()}/rest/api/3/group/member"
+    all_users = []
+    max_results = 50
+
+    for group_name in SITE_PRODUCT_GROUPS:
+        start_at = 0
+        while True:
+            try:
+                resp = request_with_retries(
+                    session,
+                    "GET",
+                    url,
+                    headers=headers,
+                    params={
+                        "groupname": group_name,
+                        "startAt": start_at,
+                        "maxResults": max_results,
+                    },
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except (RequestException, ValueError) as exc:
+                warn(f"Could not load members of product group {group_name}: {exc}")
+                break
+
+            members = data.get("values", []) if isinstance(data, dict) else []
+            for user in members:
+                account_id = user.get("accountId") or user.get("account_id")
+                if not account_id:
+                    continue
+                account_type = user.get("accountType") or user.get("account_type")
+                all_users.append({
+                    "email": user.get("emailAddress") or user.get("email", ""),
+                    "account_id": account_id,
+                    "name": user.get("displayName") or user.get("name", ""),
+                    "account_status": "active" if user.get("active") else "inactive",
+                    "account_type": "managed" if account_type == "atlassian" else "external",
+                    "last_active": None,
+                    "product_access": [],
+                })
+
+            if len(members) < max_results:
+                break
+            start_at += len(members)
+
+    return all_users
+
+
 def merge_org_users(*user_lists):
     """Merge discovery results while retaining one record per organization user."""
     merged = {}
@@ -371,19 +431,24 @@ def suspend_user(org_id, user, headers, dry_run=False, session=None):
         url = f"{ADMIN_API_BASE_URL}/orgs/{org_id}/directory/users/{account_id}/suspend-access"
     if dry_run:
         print(f"  DRY RUN: POST {url}")
-        return True
+        return True, ""
 
     try:
         resp = request_with_retries(session, 'POST', url, headers=headers, timeout=20)
     except RequestException as e:
         error(f"  Suspend request failed for {account_id}: {e}")
-        return False
+        return False, "Suspension request failed"
 
     if resp.status_code in (200, 204):
-        return True
+        return True, ""
+
+    if resp.status_code == 409:
+        reason = "Billing administrator conflict"
+        error(f"  Suspend blocked for {account_id}: {reason} ({resp.text})")
+        return False, reason
 
     error(f"  Suspend failed for {account_id}: {resp.status_code} {resp.text}")
-    return False
+    return False, "Suspension failed"
 
 
 def domain_of(email: str):
@@ -509,7 +574,8 @@ def main():
         print(f"Loading all organization users from org {org_id}...")
         org_users = load_all_org_users(org_id, org_headers, session=session)
         site_users = load_all_site_users(site_headers, session=session)
-        all_users = merge_org_users(org_users, site_users)
+        group_users = load_all_product_group_users(site_headers, session=session)
+        all_users = merge_org_users(org_users, site_users, group_users)
         if not all_users:
             print("No users found in org.")
             return
@@ -598,6 +664,7 @@ def main():
     # Suspend
     suspended = []
     failed = 0
+    billing_conflicts = 0
 
     for i, u in enumerate(candidates, 1):
         print(f"  [{i}/{len(candidates)}] Suspending {u['email']} (last active: {u['last_active'] or 'never'})...")
@@ -616,7 +683,9 @@ def main():
             results.append(result_for(u, "skipped", "Service Account"))
             continue
 
-        ok = suspend_user(org_id, u, org_headers, dry_run=args.dry_run, session=session)
+        ok, failure_reason = suspend_user(
+            org_id, u, org_headers, dry_run=args.dry_run, session=session
+        )
         if ok:
             if not args.dry_run:
                 success(f"    Suspended: {u['email']}")
@@ -626,7 +695,9 @@ def main():
             results.append(suspended[-1])
         else:
             failed += 1
-            results.append(result_for(u, "failed", "Suspension failed"))
+            if failure_reason == "Billing administrator conflict":
+                billing_conflicts += 1
+            results.append(result_for(u, "failed", failure_reason))
 
     # Write results
     if results:
@@ -646,6 +717,8 @@ def main():
     print(f"  Skipped (Service Account): {skipped_service_account}")
     if failed:
         print(f"  Failed:                    {failed}")
+    if billing_conflicts:
+        print(f"  Billing admin conflicts:   {billing_conflicts}")
 
 
 if __name__ == '__main__':

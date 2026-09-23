@@ -45,7 +45,7 @@ Arguments (summary)
 
 Behavior notes
 --------------
-- Date mode combines managed organization users from `GET /admin/v1/orgs/{org_id}/users` with Jira site users from `GET /rest/api/3/users/search`. Organization responses use `links.next` pagination; site responses use `startAt` and `maxResults`. The two lists are merged by account ID, preserving organization activity data when both sources contain the same account.
+- Date mode combines managed organization users from `GET /admin/v1/orgs/{org_id}/users` with Jira site users from `GET /rest/api/3/users/search` and product access group members from `GET /rest/api/3/group/member`. Organization responses use `links.next` pagination; site and group responses use paginated requests. The lists are merged by account ID, preserving organization activity data when both sources contain the same account.
 - File mode matches a populated `emailAddress` exactly, case-insensitively, and accepts a result with a privacy-redacted email address because the search query is the requested email. It uses the returned account ID, display name, active status, and account type.
 - CSV input accepts UTF-8 and UTF-8-BOM files, strips whitespace, and ignores blank rows.
 - Users not found in the organization are recorded as skipped with reason `User not found`.
@@ -55,7 +55,8 @@ Behavior notes
 - Account status comparisons are case-insensitive.
 - Before suspension, the script calls the user profile endpoint and checks the job title. If the title contains "Service Account" (case-insensitive), the user is skipped and recorded in the CSV with action="skipped" and reason="Service Account".
 - Accounts with an account ID are checked through the profile endpoint before suspension so service-account job titles are honored consistently.
-- If the profile endpoint cannot be fetched, the user is skipped with action="skipped" and reason="Profile unavailable" instead of being suspended.
+- If the profile endpoint returns HTTP 403 for an external account, the account proceeds without a job-title check because external profiles are not organization-managed. Other profile failures remain skipped with action="skipped" and reason="Profile unavailable".
+- HTTP 409 suspension responses are recorded as failed with reason "Billing administrator conflict" and do not interrupt processing of later candidates.
 - HTTP requests use a retry-enabled session for 429 and 5xx responses.
 - The script prints ANSI-colored messages; on Windows you may want to enable VT100 support or use colorama.
 
